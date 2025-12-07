@@ -1,0 +1,184 @@
+name: Update MMDB Databases
+
+on:
+  schedule:
+    # Run daily at 6:00 AM UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  update-maxmind:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Check if MaxMind release already exists
+        id: check_maxmind
+        run: |
+          if gh release view "maxmind-${{ steps.date.outputs.date }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download GeoLite2 databases
+        if: steps.check_maxmind.outputs.exists == 'false'
+        run: |
+          mkdir -p downloads/maxmind
+          
+          # GeoLite2 Country
+          curl -sSL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz" -o downloads/maxmind/GeoLite2-Country.tar.gz
+          tar -xzf downloads/maxmind/GeoLite2-Country.tar.gz -C downloads/maxmind --strip-components=1
+          
+          # GeoLite2 City
+          curl -sSL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz" -o downloads/maxmind/GeoLite2-City.tar.gz
+          tar -xzf downloads/maxmind/GeoLite2-City.tar.gz -C downloads/maxmind --strip-components=1
+          
+          # GeoLite2 ASN
+          curl -sSL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-ASN&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz" -o downloads/maxmind/GeoLite2-ASN.tar.gz
+          tar -xzf downloads/maxmind/GeoLite2-ASN.tar.gz -C downloads/maxmind --strip-components=1
+
+      - name: Create LICENSE file for MaxMind
+        if: steps.check_maxmind.outputs.exists == 'false'
+        run: |
+          cat > downloads/maxmind/LICENSE.txt << 'EOF'
+          This product includes GeoLite2 Data created by MaxMind, available from https://www.maxmind.com.
+          
+          GeoLite2 databases are subject to the GeoLite2 End User License Agreement:
+          https://www.maxmind.com/en/geolite2/eula
+          
+          Per the license terms, GeoLite2 data must be deleted within 30 days of a new release.
+          EOF
+
+      - name: Create MaxMind release
+        if: steps.check_maxmind.outputs.exists == 'false'
+        run: |
+          gh release create "maxmind-${{ steps.date.outputs.date }}" \
+            --title "MaxMind GeoLite2 - ${{ steps.date.outputs.date }}" \
+            --notes "GeoLite2 databases downloaded on ${{ steps.date.outputs.date }}.
+
+          This product includes GeoLite2 Data created by MaxMind, available from https://www.maxmind.com.
+
+          **License:** [GeoLite2 EULA](https://www.maxmind.com/en/geolite2/eula)
+
+          **Note:** Per license terms, this release will be removed after 30 days." \
+            --latest \
+            downloads/maxmind/*.mmdb \
+            downloads/maxmind/LICENSE.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup old MaxMind releases (older than 30 days)
+        run: |
+          # Get all releases with maxmind prefix
+          releases=$(gh release list --limit 100 --json tagName,createdAt -q '.[] | select(.tagName | startswith("maxmind-"))' | jq -s '.')
+          
+          # Calculate cutoff date (30 days ago)
+          cutoff=$(date -d '30 days ago' +%Y-%m-%d 2>/dev/null || date -v-30d +%Y-%m-%d)
+          
+          echo "Cutoff date: $cutoff"
+          
+          # Delete releases older than 30 days
+          echo "$releases" | jq -r '.[] | .tagName' | while read tag; do
+            # Extract date from tag (format: maxmind-YYYY-MM-DD)
+            tag_date=$(echo "$tag" | sed 's/maxmind-//')
+            if [[ "$tag_date" < "$cutoff" ]]; then
+              echo "Deleting old release: $tag"
+              gh release delete "$tag" --yes --cleanup-tag || true
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-dbip:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get current month
+        id: month
+        run: echo "month=$(date +'%Y-%m')" >> $GITHUB_OUTPUT
+
+      - name: Check if DB-IP release already exists for this month
+        id: check_dbip
+        run: |
+          if gh release view "dbip-${{ steps.month.outputs.month }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download DB-IP Lite databases
+        if: steps.check_dbip.outputs.exists == 'false'
+        run: |
+          mkdir -p downloads/dbip
+          
+          MONTH="${{ steps.month.outputs.month }}"
+          
+          # DB-IP Country Lite
+          curl -sSL "https://download.db-ip.com/free/dbip-country-lite-${MONTH}.mmdb.gz" -o downloads/dbip/dbip-country-lite.mmdb.gz
+          gunzip downloads/dbip/dbip-country-lite.mmdb.gz
+          
+          # DB-IP City Lite
+          curl -sSL "https://download.db-ip.com/free/dbip-city-lite-${MONTH}.mmdb.gz" -o downloads/dbip/dbip-city-lite.mmdb.gz
+          gunzip downloads/dbip/dbip-city-lite.mmdb.gz
+          
+          # DB-IP ASN Lite
+          curl -sSL "https://download.db-ip.com/free/dbip-asn-lite-${MONTH}.mmdb.gz" -o downloads/dbip/dbip-asn-lite.mmdb.gz
+          gunzip downloads/dbip/dbip-asn-lite.mmdb.gz
+
+      - name: Create LICENSE file for DB-IP
+        if: steps.check_dbip.outputs.exists == 'false'
+        run: |
+          cat > downloads/dbip/LICENSE.txt << 'EOF'
+          IP Geolocation by DB-IP (https://db-ip.com)
+          
+          This database is licensed under a Creative Commons Attribution 4.0 International License.
+          https://creativecommons.org/licenses/by/4.0/
+          
+          You are free to use this database in your application, provided you give attribution to DB-IP.com.
+          EOF
+
+      - name: Create DB-IP release
+        if: steps.check_dbip.outputs.exists == 'false'
+        run: |
+          gh release create "dbip-${{ steps.month.outputs.month }}" \
+            --title "DB-IP Lite - ${{ steps.month.outputs.month }}" \
+            --notes "DB-IP Lite databases for ${{ steps.month.outputs.month }}.
+
+          IP Geolocation by [DB-IP](https://db-ip.com).
+
+          **License:** [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/)
+
+          Attribution required: Include a link to DB-IP.com when using this data." \
+            downloads/dbip/*.mmdb \
+            downloads/dbip/LICENSE.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Mark DB-IP as latest if no MaxMind release today
+        run: |
+          # Check if there's a MaxMind release from today
+          TODAY=$(date +'%Y-%m-%d')
+          if ! gh release view "maxmind-$TODAY" >/dev/null 2>&1; then
+            # No MaxMind release today, mark DB-IP as latest
+            gh release edit "dbip-${{ steps.month.outputs.month }}" --latest || true
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
