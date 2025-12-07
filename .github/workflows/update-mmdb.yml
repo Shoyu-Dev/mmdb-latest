@@ -9,11 +9,9 @@ on:
 jobs:
   update-maxmind:
     runs-on: ubuntu-latest
+    environment: maxmind
     permissions:
       contents: write
-    env:
-      MAXMIND_ACCOUNT_ID: ${{ secrets.MAXMIND_ACCOUNT_ID }}
-      MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,6 +33,9 @@ jobs:
 
       - name: Download GeoLite2 databases
         if: steps.check_maxmind.outputs.exists == 'false'
+        env:
+          MAXMIND_ACCOUNT_ID: ${{ secrets.MAXMIND_ACCOUNT_ID }}
+          MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
         run: |
           mkdir -p downloads/maxmind
           
