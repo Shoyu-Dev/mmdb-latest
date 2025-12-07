@@ -141,9 +141,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Get current month
-        id: month
-        run: echo "month=$(date +'%Y-%m')" >> $GITHUB_OUTPUT
+      - name: Get current date
+        id: date
+        run: |
+          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          echo "month=$(date +'%Y-%m')" >> $GITHUB_OUTPUT
 
       - name: Restore DB-IP checksum cache
         id: cache-dbip
@@ -157,7 +159,7 @@ jobs:
         run: |
           mkdir -p downloads/dbip
           
-          MONTH="${{ steps.month.outputs.month }}"
+          MONTH="${{ steps.date.outputs.month }}"
           
           # DB-IP Country Lite
           curl -sSL "https://download.db-ip.com/free/dbip-country-lite-${MONTH}.mmdb.gz" -o downloads/dbip/dbip-country-lite.mmdb.gz
@@ -208,9 +210,9 @@ jobs:
       - name: Create DB-IP release
         if: steps.checksum-dbip.outputs.changed == 'true'
         run: |
-          gh release create "dbip-${{ steps.month.outputs.month }}" \
-            --title "DB-IP Lite - ${{ steps.month.outputs.month }}" \
-            --notes "DB-IP Lite databases for ${{ steps.month.outputs.month }}.
+          gh release create "dbip-${{ steps.date.outputs.date }}" \
+            --title "DB-IP Lite - ${{ steps.date.outputs.date }}" \
+            --notes "DB-IP Lite databases for ${{ steps.date.outputs.month }}.
 
           IP Geolocation by [DB-IP](https://db-ip.com).
 
@@ -232,16 +234,16 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .checksums/dbip
-          key: dbip-checksums-${{ steps.month.outputs.month }}
+          key: dbip-checksums-${{ steps.date.outputs.date }}
 
       - name: Mark DB-IP as latest if no MaxMind release today
         if: steps.checksum-dbip.outputs.changed == 'true'
         run: |
           # Check if there's a MaxMind release from today
           TODAY=$(date +'%Y-%m-%d')
-          if ! gh release view "maxmind-\$TODAY" >/dev/null 2>&1; then
+          if ! gh release view "maxmind-$TODAY" >/dev/null 2>&1; then
             # No MaxMind release today, mark DB-IP as latest
-            gh release edit "dbip-${{ steps.month.outputs.month }}" --latest || true
+            gh release edit "dbip-${{ steps.date.outputs.date }}" --latest || true
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
