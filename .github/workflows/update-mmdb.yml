@@ -20,19 +20,34 @@ jobs:
         id: date
         run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
-      - name: Check if MaxMind release already exists
-        id: check_maxmind
+      - name: Restore MaxMind checksum cache
+        id: cache-maxmind
+        uses: actions/cache@v4
+        with:
+          path: .checksums/maxmind
+          key: maxmind-checksums
+          restore-keys: maxmind-checksums
+
+      - name: Fallback - fetch checksums from latest MaxMind release
+        if: steps.cache-maxmind.outputs.cache-hit != 'true'
         run: |
-          if gh release view "maxmind-${{ steps.date.outputs.date }}" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+          mkdir -p .checksums/maxmind
+          # Try to download SHA256SUMS.txt from the latest maxmind release
+          LATEST_TAG=$(gh release list --limit 50 --json tagName -q '[.[] | select(.tagName | startswith("maxmind-"))][0].tagName' || echo "")
+          if [ -n "$LATEST_TAG" ]; then
+            echo "Found latest MaxMind release: $LATEST_TAG"
+            gh release download "$LATEST_TAG" --pattern "SHA256SUMS.txt" --dir .checksums/maxmind || true
+            if [ -f .checksums/maxmind/SHA256SUMS.txt ]; then
+              mv .checksums/maxmind/SHA256SUMS.txt .checksums/maxmind/previous.txt
+              echo "Successfully restored checksums from latest release"
+            fi
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "No previous MaxMind release found"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download GeoLite2 databases
-        if: steps.check_maxmind.outputs.exists == 'false'
         env:
           MAXMIND_ACCOUNT_ID: ${{ secrets.MAXMIND_ACCOUNT_ID }}
           MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
@@ -51,8 +66,40 @@ jobs:
           curl -sSL -u "${MAXMIND_ACCOUNT_ID}:${MAXMIND_LICENSE_KEY}" "https://download.maxmind.com/geoip/databases/GeoLite2-ASN/download?suffix=tar.gz" -o downloads/maxmind/GeoLite2-ASN.tar.gz
           tar -xzf downloads/maxmind/GeoLite2-ASN.tar.gz -C downloads/maxmind --strip-components=1
 
+      - name: Calculate checksums and check for changes
+        id: checksum-maxmind
+        run: |
+          mkdir -p .checksums/maxmind
+          
+          # Calculate current checksums (store just filename, not full path)
+          cd downloads/maxmind
+          sha256sum *.mmdb | sort > ../../.checksums/maxmind/current.txt
+          cd ../..          
+          
+          # Also create SHA256SUMS.txt for the release
+          cp .checksums/maxmind/current.txt downloads/maxmind/SHA256SUMS.txt
+          
+          # Check if previous checksums exist and compare
+          if [ -f .checksums/maxmind/previous.txt ]; then
+            if diff -q .checksums/maxmind/current.txt .checksums/maxmind/previous.txt > /dev/null 2>&1; then
+              echo "No changes detected in MaxMind databases"
+              echo "changed=false" >> $GITHUB_OUTPUT
+            else
+              echo "Changes detected in MaxMind databases"
+              echo "changed=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "No previous checksums found, treating as new"
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+          
+          # Export checksums for release notes
+          echo "checksums<<EOF" >> $GITHUB_OUTPUT
+          cat .checksums/maxmind/current.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Create LICENSE file for MaxMind
-        if: steps.check_maxmind.outputs.exists == 'false'
+        if: steps.checksum-maxmind.outputs.changed == 'true'
         run: |
           cat > downloads/maxmind/LICENSE.txt << 'EOF'
           This product includes GeoLite2 Data created by MaxMind, available from https://www.maxmind.com.
@@ -64,7 +111,7 @@ jobs:
           EOF
 
       - name: Create MaxMind release
-        if: steps.check_maxmind.outputs.exists == 'false'
+        if: steps.checksum-maxmind.outputs.changed == 'true'
         run: |
           gh release create "maxmind-${{ steps.date.outputs.date }}" \
             --title "MaxMind GeoLite2 - ${{ steps.date.outputs.date }}" \
@@ -74,17 +121,63 @@ jobs:
 
           **License:** [GeoLite2 EULA](https://www.maxmind.com/en/geolite2/eula)
 
-          **Note:** Per license terms, this release will be removed after 30 days." \
+          **Note:** Per license terms, this release will be removed after 30 days.
+
+          ## SHA256 Checksums
+          \`\`\`
+          ${{ steps.checksum-maxmind.outputs.checksums }}
+          \`\`\`" \
             --latest \
             downloads/maxmind/*.mmdb \
-            downloads/maxmind/LICENSE.txt
+            downloads/maxmind/LICENSE.txt \
+            downloads/maxmind/SHA256SUMS.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Update maxmind-latest tag and release
+        if: steps.checksum-maxmind.outputs.changed == 'true'
+        run: |
+          # Delete existing maxmind-latest release and tag if they exist
+          gh release delete maxmind-latest --yes --cleanup-tag 2>/dev/null || true
+          
+          # Create new maxmind-latest release with same assets
+          gh release create "maxmind-latest" \
+            --title "MaxMind GeoLite2 - Latest" \
+            --notes "**Latest MaxMind GeoLite2 databases** (updated ${{ steps.date.outputs.date }})
+
+          This release always points to the most recent MaxMind databases.
+          For a specific version, see [maxmind-${{ steps.date.outputs.date }}](../../releases/tag/maxmind-${{ steps.date.outputs.date }}).
+
+          This product includes GeoLite2 Data created by MaxMind, available from https://www.maxmind.com.
+
+          **License:** [GeoLite2 EULA](https://www.maxmind.com/en/geolite2/eula)
+
+          ## SHA256 Checksums
+          \`\`\`
+          ${{ steps.checksum-maxmind.outputs.checksums }}
+          \`\`\`" \
+            downloads/maxmind/*.mmdb \
+            downloads/maxmind/LICENSE.txt \
+            downloads/maxmind/SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update cached checksums
+        if: steps.checksum-maxmind.outputs.changed == 'true'
+        run: |
+          cp .checksums/maxmind/current.txt .checksums/maxmind/previous.txt
+
+      - name: Save MaxMind checksum cache
+        if: steps.checksum-maxmind.outputs.changed == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .checksums/maxmind
+          key: maxmind-checksums-${{ steps.date.outputs.date }}
+
       - name: Cleanup old MaxMind releases (older than 30 days)
         run: |
-          # Get all releases with maxmind prefix
-          releases=$(gh release list --limit 100 --json tagName,createdAt -q '.[] | select(.tagName | startswith("maxmind-"))' | jq -s '.')
+          # Get all releases with maxmind prefix (excluding maxmind-latest)
+          releases=$(gh release list --limit 100 --json tagName,createdAt -q '.[] | select(.tagName | startswith("maxmind-")) | select(.tagName != "maxmind-latest")' | jq -s '.')
           
           # Calculate cutoff date (30 days ago)
           cutoff=$(date -d '30 days ago' +%Y-%m-%d 2>/dev/null || date -v-30d +%Y-%m-%d)
@@ -111,27 +204,44 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Get current month
-        id: month
-        run: echo "month=$(date +'%Y-%m')" >> $GITHUB_OUTPUT
-
-      - name: Check if DB-IP release already exists for this month
-        id: check_dbip
+      - name: Get current date
+        id: date
         run: |
-          if gh release view "dbip-${{ steps.month.outputs.month }}" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          echo "month=$(date +'%Y-%m')" >> $GITHUB_OUTPUT
+
+      - name: Restore DB-IP checksum cache
+        id: cache-dbip
+        uses: actions/cache@v4
+        with:
+          path: .checksums/dbip
+          key: dbip-checksums
+          restore-keys: dbip-checksums
+
+      - name: Fallback - fetch checksums from latest DB-IP release
+        if: steps.cache-dbip.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .checksums/dbip
+          # Try to download SHA256SUMS.txt from the latest dbip release
+          LATEST_TAG=$(gh release list --limit 50 --json tagName -q '[.[] | select(.tagName | startswith("dbip-"))][0].tagName' || echo "")
+          if [ -n "$LATEST_TAG" ]; then
+            echo "Found latest DB-IP release: $LATEST_TAG"
+            gh release download "$LATEST_TAG" --pattern "SHA256SUMS.txt" --dir .checksums/dbip || true
+            if [ -f .checksums/dbip/SHA256SUMS.txt ]; then
+              mv .checksums/dbip/SHA256SUMS.txt .checksums/dbip/previous.txt
+              echo "Successfully restored checksums from latest release"
+            fi
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "No previous DB-IP release found"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download DB-IP Lite databases
-        if: steps.check_dbip.outputs.exists == 'false'
         run: |
           mkdir -p downloads/dbip
           
-          MONTH="${{ steps.month.outputs.month }}"
+          MONTH="${{ steps.date.outputs.month }}"
           
           # DB-IP Country Lite
           curl -sSL "https://download.db-ip.com/free/dbip-country-lite-${MONTH}.mmdb.gz" -o downloads/dbip/dbip-country-lite.mmdb.gz
@@ -145,8 +255,40 @@ jobs:
           curl -sSL "https://download.db-ip.com/free/dbip-asn-lite-${MONTH}.mmdb.gz" -o downloads/dbip/dbip-asn-lite.mmdb.gz
           gunzip downloads/dbip/dbip-asn-lite.mmdb.gz
 
+      - name: Calculate checksums and check for changes
+        id: checksum-dbip
+        run: |
+          mkdir -p .checksums/dbip
+          
+          # Calculate current checksums (store just filename, not full path)
+          cd downloads/dbip
+          sha256sum *.mmdb | sort > ../../.checksums/dbip/current.txt
+          cd ../..          
+          
+          # Also create SHA256SUMS.txt for the release
+          cp .checksums/dbip/current.txt downloads/dbip/SHA256SUMS.txt
+          
+          # Check if previous checksums exist and compare
+          if [ -f .checksums/dbip/previous.txt ]; then
+            if diff -q .checksums/dbip/current.txt .checksums/dbip/previous.txt > /dev/null 2>&1; then
+              echo "No changes detected in DB-IP databases"
+              echo "changed=false" >> $GITHUB_OUTPUT
+            else
+              echo "Changes detected in DB-IP databases"
+              echo "changed=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "No previous checksums found, treating as new"
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+          
+          # Export checksums for release notes
+          echo "checksums<<EOF" >> $GITHUB_OUTPUT
+          cat .checksums/dbip/current.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Create LICENSE file for DB-IP
-        if: steps.check_dbip.outputs.exists == 'false'
+        if: steps.checksum-dbip.outputs.changed == 'true'
         run: |
           cat > downloads/dbip/LICENSE.txt << 'EOF'
           IP Geolocation by DB-IP (https://db-ip.com)
@@ -158,29 +300,64 @@ jobs:
           EOF
 
       - name: Create DB-IP release
-        if: steps.check_dbip.outputs.exists == 'false'
+        if: steps.checksum-dbip.outputs.changed == 'true'
         run: |
-          gh release create "dbip-${{ steps.month.outputs.month }}" \
-            --title "DB-IP Lite - ${{ steps.month.outputs.month }}" \
-            --notes "DB-IP Lite databases for ${{ steps.month.outputs.month }}.
+          gh release create "dbip-${{ steps.date.outputs.date }}" \
+            --title "DB-IP Lite - ${{ steps.date.outputs.date }}" \
+            --notes "DB-IP Lite databases for ${{ steps.date.outputs.month }}.
 
           IP Geolocation by [DB-IP](https://db-ip.com).
 
           **License:** [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/)
 
-          Attribution required: Include a link to DB-IP.com when using this data." \
+          Attribution required: Include a link to DB-IP.com when using this data.
+
+          ## SHA256 Checksums
+          \`\`\`
+          ${{ steps.checksum-dbip.outputs.checksums }}
+          \`\`\`" \
             downloads/dbip/*.mmdb \
-            downloads/dbip/LICENSE.txt
+            downloads/dbip/LICENSE.txt \
+            downloads/dbip/SHA256SUMS.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Mark DB-IP as latest if no MaxMind release today
+      - name: Update dbip-latest tag and release
+        if: steps.checksum-dbip.outputs.changed == 'true'
         run: |
-          # Check if there's a MaxMind release from today
-          TODAY=$(date +'%Y-%m-%d')
-          if ! gh release view "maxmind-$TODAY" >/dev/null 2>&1; then
-            # No MaxMind release today, mark DB-IP as latest
-            gh release edit "dbip-${{ steps.month.outputs.month }}" --latest || true
-          fi
+          # Delete existing dbip-latest release and tag if they exist
+          gh release delete dbip-latest --yes --cleanup-tag 2>/dev/null || true
+          
+          # Create new dbip-latest release with same assets
+          gh release create "dbip-latest" \
+            --title "DB-IP Lite - Latest" \
+            --notes "**Latest DB-IP Lite databases** (updated ${{ steps.date.outputs.date }})
+
+          This release always points to the most recent DB-IP databases.
+          For a specific version, see [dbip-${{ steps.date.outputs.date }}](../../releases/tag/dbip-${{ steps.date.outputs.date }}).
+
+          IP Geolocation by [DB-IP](https://db-ip.com).
+
+          **License:** [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/)
+
+          ## SHA256 Checksums
+          \`\`\`
+          ${{ steps.checksum-dbip.outputs.checksums }}
+          \`\`\`" \
+            downloads/dbip/*.mmdb \
+            downloads/dbip/LICENSE.txt \
+            downloads/dbip/SHA256SUMS.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update cached checksums
+        if: steps.checksum-dbip.outputs.changed == 'true'
+        run: |
+          cp .checksums/dbip/current.txt .checksums/dbip/previous.txt
+
+      - name: Save DB-IP checksum cache
+        if: steps.checksum-dbip.outputs.changed == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .checksums/dbip
+          key: dbip-checksums-${{ steps.date.outputs.date }}
