@@ -1,8 +1,32 @@
 # MMDB Latest
 
+[![Update MMDB Databases](https://github.com/Shoyu-Dev/mmdb-latest/actions/workflows/update-mmdb.yml/badge.svg)](https://github.com/Shoyu-Dev/mmdb-latest/actions/workflows/update-mmdb.yml)
+[![MaxMind Latest](https://img.shields.io/github/v/release/Shoyu-Dev/mmdb-latest?filter=maxmind-2*&label=MaxMind&color=blue)](https://github.com/Shoyu-Dev/mmdb-latest/releases/tag/maxmind-latest)
+[![DB-IP Latest](https://img.shields.io/github/v/release/Shoyu-Dev/mmdb-latest?filter=dbip-2*&label=DB-IP&color=green)](https://github.com/Shoyu-Dev/mmdb-latest/releases/tag/dbip-latest)
+
 Automated GitHub releases of free IP geolocation databases (MMDB format) for personal use.
 
 A daily workflow checks for new versions from MaxMind GeoLite2 and DB-IP Lite databases, downloading and publishing them as GitHub releases when updates are available.
+
+## Quick Download
+
+### MaxMind GeoLite2 (Latest)
+
+| Database | Download |
+|----------|----------|
+| GeoLite2-Country | [Download](https://github.com/Shoyu-Dev/mmdb-latest/releases/download/maxmind-latest/GeoLite2-Country.mmdb) |
+| GeoLite2-City | [Download](https://github.com/Shoyu-Dev/mmdb-latest/releases/download/maxmind-latest/GeoLite2-City.mmdb) |
+| GeoLite2-ASN | [Download](https://github.com/Shoyu-Dev/mmdb-latest/releases/download/maxmind-latest/GeoLite2-ASN.mmdb) |
+| SHA256SUMS | [Download](https://github.com/Shoyu-Dev/mmdb-latest/releases/download/maxmind-latest/SHA256SUMS.txt) |
+
+### DB-IP Lite (Latest)
+
+| Database | Download |
+|----------|----------|
+| dbip-country-lite | [Download](https://github.com/Shoyu-Dev/mmdb-latest/releases/download/dbip-latest/dbip-country-lite.mmdb) |
+| dbip-city-lite | [Download](https://github.com/Shoyu-Dev/mmdb-latest/releases/download/dbip-latest/dbip-city-lite.mmdb) |
+| dbip-asn-lite | [Download](https://github.com/Shoyu-Dev/mmdb-latest/releases/download/dbip-latest/dbip-asn-lite.mmdb) |
+| SHA256SUMS | [Download](https://github.com/Shoyu-Dev/mmdb-latest/releases/download/dbip-latest/SHA256SUMS.txt) |
 
 ## Releases
 
@@ -11,7 +35,19 @@ A daily workflow checks for new versions from MaxMind GeoLite2 and DB-IP Lite da
 
 ## Usage
 
-Download the latest release assets directly from the [Releases](../../releases) page.
+Download the latest release assets directly from the [Releases](../../releases) page, or use the direct download links above.
+
+### Verify Downloads
+
+Each release includes a `SHA256SUMS.txt` file. To verify your downloads:
+
+```bash
+# Download the checksums file
+curl -LO https://github.com/Shoyu-Dev/mmdb-latest/releases/download/maxmind-latest/SHA256SUMS.txt
+
+# Verify (run from the directory containing the .mmdb files)
+sha256sum -c SHA256SUMS.txt
+```
 
 ## License & Attribution
 
