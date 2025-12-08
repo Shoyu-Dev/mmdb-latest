@@ -51,13 +51,23 @@ sha256sum -c SHA256SUMS.txt
 
 ## License & Attribution
 
-### MaxMind GeoLite2
+### Repository Code
+
+The workflow and documentation in this repository are licensed under the [MIT License](LICENSE).
+
+**Note:** This license applies only to the repository code (workflows, scripts, documentation), not to the published release artifacts.
+
+### Published Artifacts
+
+The database files published in releases are governed by their respective licenses:
+
+#### MaxMind GeoLite2
 
 This product includes GeoLite2 Data created by MaxMind, available from [https://www.maxmind.com](https://www.maxmind.com).
 
 GeoLite2 databases are subject to the [GeoLite2 End User License Agreement](https://www.maxmind.com/en/geolite2/eula). Per the license terms, GeoLite2 data must be deleted within 30 days of a new release. MaxMind releases are automatically removed from this repo after 30 days.
 
-### DB-IP Lite
+#### DB-IP Lite
 
 IP Geolocation by [DB-IP](https://db-ip.com).
 
