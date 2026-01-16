@@ -215,8 +215,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .checksums/dbip
-          key: dbip-checksums
-          restore-keys: dbip-checksums
+          # Use a dated key and a prefix restore-key so we can restore the most
+          # recent cache when today's key doesn't exist.
+          key: dbip-checksums-${{ steps.date.outputs.date }}
+          restore-keys: dbip-checksums-
 
       - name: Fallback - fetch checksums from latest DB-IP release
         if: steps.cache-dbip.outputs.cache-hit != 'true'
