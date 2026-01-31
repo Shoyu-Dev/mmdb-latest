@@ -170,11 +170,12 @@ jobs:
 
   release:
     needs: [download-and-check, integration-test]
-    # Run if changed AND (tests passed OR tests were skipped because run-integration-tests is false)
+    # Run if changed AND (tests passed OR tests were skipped because run-integration-tests is false) AND only on main
     if: |
       always() &&
       needs.download-and-check.outputs.changed == 'true' &&
-      (needs.integration-test.result == 'success' || needs.integration-test.result == 'skipped')
+      (needs.integration-test.result == 'success' || needs.integration-test.result == 'skipped') &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -256,6 +257,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Cleanup old releases
+        if: ${{ github.ref == 'refs/heads/main' }}
         uses: ./.github/actions/cleanup-releases
         with:
           prefix: ${{ inputs.provider }}
