@@ -10,7 +10,7 @@ on:
 
 jobs:
   update-maxmind:
-    uses: ./.github/workflows/update-mmdb-reusable.yml
+    uses: jcjc-dev/mmdb-latest/.github/workflows/update-mmdb-reusable.yml@users/jcjc/add-reusable-workflows
     with:
       provider: maxmind
       databases: 'GeoLite2-Country GeoLite2-City GeoLite2-ASN'
@@ -35,7 +35,7 @@ jobs:
       download-password: ${{ secrets.MAXMIND_LICENSE_KEY }}
 
   update-dbip:
-    uses: ./.github/workflows/update-mmdb-reusable.yml
+    uses: jcjc-dev/mmdb-latest/.github/workflows/update-mmdb-reusable.yml@users/jcjc/add-reusable-workflows
     with:
       provider: dbip
       databases: 'dbip-country-lite dbip-city-lite dbip-asn-lite'
