@@ -1,0 +1,155 @@
+name: PR Checks (MMDB)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  download-and-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get current date
+        id: date
+        run: |
+          echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+          echo "month=$(date +'%Y-%m')" >> "$GITHUB_OUTPUT"
+
+      - name: Download databases (PR)
+        env:
+          MAXMIND_ACCOUNT_ID: ${{ secrets.MAXMIND_ACCOUNT_ID }}
+          MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p downloads/maxmind
+          BASE_URL="https://download.maxmind.com/geoip/databases"
+
+          download_and_extract() {
+            local db="$1"
+            local max_attempts=3
+            local attempt=1
+            while [[ $attempt -le $max_attempts ]]; do
+              echo "Downloading $db (attempt $attempt/$max_attempts)..."
+              if curl -sSfL --retry 2 --retry-delay 5 -u "${MAXMIND_ACCOUNT_ID}:${MAXMIND_LICENSE_KEY}" "${BASE_URL}/${db}/download?suffix=tar.gz" -o "downloads/maxmind/${db}.tar.gz"; then
+                if [[ -s "downloads/maxmind/${db}.tar.gz" ]] && gzip -t "downloads/maxmind/${db}.tar.gz" 2>/dev/null; then
+                  tar -xzf "downloads/maxmind/${db}.tar.gz" -C downloads/maxmind --strip-components=1
+                  rm -f "downloads/maxmind/${db}.tar.gz"
+                  return 0
+                fi
+              fi
+              rm -f "downloads/maxmind/${db}.tar.gz"
+              ((attempt++))
+              sleep $((attempt * 5))
+            done
+            echo "ERROR: Failed to download $db"
+            exit 1
+          }
+
+          download_and_extract "GeoLite2-Country"
+          download_and_extract "GeoLite2-City"
+          download_and_extract "GeoLite2-ASN"
+
+      - name: Calculate checksums
+        id: checksum
+        run: |
+          set -euo pipefail
+          mkdir -p .checksums/maxmind
+          (cd downloads/maxmind && sha256sum *.mmdb | sort) > .checksums/maxmind/current.txt
+          cp .checksums/maxmind/current.txt downloads/maxmind/SHA256SUMS.txt
+          echo "checksums<<EOF" >> "$GITHUB_OUTPUT"
+          cat .checksums/maxmind/current.txt >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: maxmind-databases
+          path: downloads/maxmind/*.mmdb
+
+      - name: Download DB-IP databases (PR)
+        run: |
+          set -euo pipefail
+          mkdir -p downloads/dbip
+          MONTH="$(date +'%Y-%m')"
+          BASE_URL="https://download.db-ip.com/free"
+
+          download_and_extract_dbip() {
+            local db="$1"
+            local max_attempts=3
+            local attempt=1
+            while [[ $attempt -le $max_attempts ]]; do
+              echo "Downloading $db (attempt $attempt/$max_attempts)..."
+              if curl -sSfL --retry 2 --retry-delay 5 "${BASE_URL}/${db}-${MONTH}.mmdb.gz" -o "downloads/dbip/${db}.mmdb.gz"; then
+                if [[ -s "downloads/dbip/${db}.mmdb.gz" ]] && gzip -t "downloads/dbip/${db}.mmdb.gz" 2>/dev/null; then
+                  gunzip "downloads/dbip/${db}.mmdb.gz"
+                  return 0
+                fi
+              fi
+              rm -f "downloads/dbip/${db}.mmdb.gz"
+              ((attempt++))
+              sleep $((attempt * 5))
+            done
+            echo "ERROR: Failed to download $db"
+            exit 1
+          }
+
+          download_and_extract_dbip "dbip-country-lite"
+          download_and_extract_dbip "dbip-city-lite"
+          download_and_extract_dbip "dbip-asn-lite"
+
+      - name: Upload DB-IP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbip-databases
+          path: downloads/dbip/*.mmdb
+
+  integration-test:
+    needs: download-and-check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        provider: [maxmind, dbip]
+    steps:
+      - name: Download database artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.provider }}-databases
+          path: data
+
+      - name: List downloaded files
+        run: ls -la data/
+
+      - name: Clone ipwhere for integration tests
+        run: |
+          git clone --depth 1 https://github.com/Shoyu-Dev/ipwhere.git ipwhere
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Determine database paths
+        id: dbpaths
+        run: |
+          CITY_DB=$(find data -name '*city*.mmdb' -o -name '*City*.mmdb' | head -1)
+          ASN_DB=$(find data -name '*asn*.mmdb' -o -name '*ASN*.mmdb' | head -1)
+          if [[ -z "$CITY_DB" || -z "$ASN_DB" ]]; then
+            echo "❌ Could not find required database files"
+            ls -la data/
+            exit 1
+          fi
+          echo "city_db=$(realpath $CITY_DB)" >> "$GITHUB_OUTPUT"
+          echo "asn_db=$(realpath $ASN_DB)" >> "$GITHUB_OUTPUT"
+
+      - name: Run integration tests
+        env:
+          CITY_DB_PATH: ${{ steps.dbpaths.outputs.city_db }}
+          ASN_DB_PATH: ${{ steps.dbpaths.outputs.asn_db }}
+        run: |
+          cd ipwhere
+          echo "Running integration tests against ${{ matrix.provider }} databases..."
+          go test -tags=integration -v ./internal/geo/...
