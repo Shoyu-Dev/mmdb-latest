@@ -6,6 +6,9 @@ on:
 
 jobs:
   download-and-check:
+    outputs:
+      maxmind_ok: ${{ steps.check_maxmind.outputs.maxmind_ok }}
+      dbip_ok: ${{ steps.check_dbip.outputs.dbip_ok }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -124,8 +127,20 @@ jobs:
           name: dbip-databases
           path: downloads/dbip/*.mmdb
 
+      - name: Check DB-IP files
+        id: check_dbip
+        run: |
+          if compgen -G "downloads/dbip/*.mmdb" > /dev/null; then
+            echo "dbip_ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dbip_ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
   integration-test:
     needs: download-and-check
+    if: >
+      (matrix.provider == 'dbip') ||
+      (matrix.provider == 'maxmind' && needs.download-and-check.outputs.maxmind_ok == 'true')
     runs-on: ubuntu-latest
     strategy:
       matrix:
