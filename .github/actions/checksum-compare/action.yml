@@ -1,0 +1,110 @@
+name: 'Calculate and Compare Checksums'
+description: 'Calculate SHA256 checksums and compare with previous version'
+
+inputs:
+  provider:
+    description: 'Database provider (maxmind or dbip)'
+    required: true
+  download-path:
+    description: 'Path to downloaded .mmdb files'
+    required: true
+  github-token:
+    description: 'GitHub token for fetching previous checksums'
+    required: true
+
+outputs:
+  changed:
+    description: 'Whether the databases have changed'
+    value: ${{ steps.compare.outputs.changed }}
+  checksums:
+    description: 'The SHA256 checksums of current databases'
+    value: ${{ steps.compare.outputs.checksums }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Restore checksum cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: .checksums/${{ inputs.provider }}
+        key: ${{ inputs.provider }}-checksums-${{ github.run_id }}
+        restore-keys: ${{ inputs.provider }}-checksums-
+
+    - name: Fallback - fetch checksums from latest release
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PROVIDER: ${{ inputs.provider }}
+      run: |
+        set -euo pipefail
+        
+        mkdir -p ".checksums/${PROVIDER}"
+        
+        # Try to download SHA256SUMS.txt from the latest release
+        LATEST_TAG=$(gh release list --limit 50 --json tagName -q "[.[] | select(.tagName | startswith(\"${PROVIDER}-\"))][0].tagName" 2>/dev/null || echo "")
+        
+        if [[ -n "$LATEST_TAG" && "$LATEST_TAG" != "null" ]]; then
+          echo "📋 Found latest ${PROVIDER} release: $LATEST_TAG"
+          if gh release download "$LATEST_TAG" --pattern "SHA256SUMS.txt" --dir ".checksums/${PROVIDER}" 2>/dev/null; then
+            if [[ -f ".checksums/${PROVIDER}/SHA256SUMS.txt" ]]; then
+              mv ".checksums/${PROVIDER}/SHA256SUMS.txt" ".checksums/${PROVIDER}/previous.txt"
+              echo "✅ Successfully restored checksums from latest release"
+            fi
+          else
+            echo "⚠️  Could not download checksums from $LATEST_TAG"
+          fi
+        else
+          echo "ℹ️  No previous ${PROVIDER} release found"
+        fi
+
+    - name: Calculate checksums and compare
+      id: compare
+      shell: bash
+      env:
+        PROVIDER: ${{ inputs.provider }}
+        DOWNLOAD_PATH: ${{ inputs.download-path }}
+      run: |
+        set -euo pipefail
+        
+        mkdir -p ".checksums/${PROVIDER}"
+        
+        # Calculate current checksums
+        echo "🔐 Calculating SHA256 checksums..."
+        (cd "$DOWNLOAD_PATH" && sha256sum *.mmdb | sort) > ".checksums/${PROVIDER}/current.txt"
+        
+        # Also create SHA256SUMS.txt for the release
+        cp ".checksums/${PROVIDER}/current.txt" "${DOWNLOAD_PATH}/SHA256SUMS.txt"
+        
+        # Compare with previous
+        changed="true"
+        if [[ -f ".checksums/${PROVIDER}/previous.txt" ]]; then
+          if diff -q ".checksums/${PROVIDER}/current.txt" ".checksums/${PROVIDER}/previous.txt" > /dev/null 2>&1; then
+            echo "ℹ️  No changes detected in ${PROVIDER} databases"
+            changed="false"
+          else
+            echo "🔄 Changes detected in ${PROVIDER} databases"
+          fi
+        else
+          echo "ℹ️  No previous checksums found, treating as new"
+        fi
+        
+        echo "changed=${changed}" >> "$GITHUB_OUTPUT"
+        
+        # Export checksums for release notes
+        {
+          echo "checksums<<EOF"
+          cat ".checksums/${PROVIDER}/current.txt"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+        
+        # Update previous for next run
+        cp ".checksums/${PROVIDER}/current.txt" ".checksums/${PROVIDER}/previous.txt"
+
+    - name: Save checksum cache
+      if: steps.compare.outputs.changed == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: .checksums/${{ inputs.provider }}
+        key: ${{ inputs.provider }}-checksums-${{ github.run_id }}

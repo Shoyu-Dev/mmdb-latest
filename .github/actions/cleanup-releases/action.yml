@@ -1,0 +1,72 @@
+name: 'Cleanup Old Releases'
+description: 'Delete releases older than a specified retention period'
+
+inputs:
+  prefix:
+    description: 'Release tag prefix (e.g., maxmind, dbip)'
+    required: true
+  retention-days:
+    description: 'Number of days to retain releases'
+    required: false
+    default: '30'
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Cleanup old releases
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PREFIX: ${{ inputs.prefix }}
+        RETENTION_DAYS: ${{ inputs.retention-days }}
+      run: |
+        set -euo pipefail
+        
+        echo "🧹 Cleaning up ${PREFIX}-* releases older than ${RETENTION_DAYS} days"
+        
+        # Get all releases with prefix (excluding *-latest)
+        releases=$(gh release list --limit 200 --json tagName -q ".[] | select(.tagName | startswith(\"${PREFIX}-\")) | select(.tagName != \"${PREFIX}-latest\")" | jq -s '.')
+        
+        # Calculate cutoff date (cross-platform: GNU date vs BSD date)
+        if date -d "${RETENTION_DAYS} days ago" +%Y-%m-%d >/dev/null 2>&1; then
+          cutoff=$(date -d "${RETENTION_DAYS} days ago" +%Y-%m-%d)
+        elif date -v-${RETENTION_DAYS}d +%Y-%m-%d >/dev/null 2>&1; then
+          cutoff=$(date -v-${RETENTION_DAYS}d +%Y-%m-%d)
+        else
+          echo "ERROR: Unable to calculate cutoff date - unsupported date command"
+          exit 1
+        fi
+        
+        echo "📅 Cutoff date: $cutoff (releases before this will be deleted)"
+        
+        deleted=0
+        skipped=0
+        
+        while IFS= read -r tag; do
+          [[ -z "$tag" ]] && continue
+          
+          # Extract date from tag (format: prefix-YYYY-MM-DD)
+          tag_date="${tag#${PREFIX}-}"
+          
+          # Validate date format (YYYY-MM-DD)
+          if ! [[ "$tag_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "⚠️  Skipping invalid tag format: $tag"
+            ((skipped++)) || true
+            continue
+          fi
+          
+          if [[ "$tag_date" < "$cutoff" ]]; then
+            echo "🗑️  Deleting: $tag (date: $tag_date)"
+            if gh release delete "$tag" --yes --cleanup-tag; then
+              ((deleted++)) || true
+            else
+              echo "⚠️  Warning: Failed to delete $tag"
+            fi
+          fi
+        done < <(echo "$releases" | jq -r '.[].tagName')
+        
+        echo ""
+        echo "✅ Cleanup complete: $deleted deleted, $skipped skipped"

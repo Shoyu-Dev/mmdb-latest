@@ -1,0 +1,111 @@
+name: 'Download MMDB Databases'
+description: 'Download and extract MMDB database files with retry logic'
+
+inputs:
+  provider:
+    description: 'Database provider (maxmind or dbip)'
+    required: true
+  databases:
+    description: 'Space-separated list of database names to download'
+    required: true
+  base-url:
+    description: 'Base URL for downloads'
+    required: true
+  url-suffix:
+    description: 'URL suffix pattern. Use {db} for database name, {month} for YYYY-MM'
+    required: true
+  auth:
+    description: 'Authentication (user:password format, optional)'
+    required: false
+    default: ''
+  month:
+    description: 'Month in YYYY-MM format (for DB-IP style URLs)'
+    required: false
+    default: ''
+  archive-type:
+    description: 'Archive type: tar.gz or gz'
+    required: false
+    default: 'tar.gz'
+
+outputs:
+  download-path:
+    description: 'Path to downloaded files'
+    value: ${{ steps.download.outputs.path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download databases
+      id: download
+      shell: bash
+      env:
+        PROVIDER: ${{ inputs.provider }}
+        DATABASES: ${{ inputs.databases }}
+        BASE_URL: ${{ inputs.base-url }}
+        URL_SUFFIX: ${{ inputs.url-suffix }}
+        AUTH: ${{ inputs.auth }}
+        MONTH: ${{ inputs.month }}
+        ARCHIVE_TYPE: ${{ inputs.archive-type }}
+      run: |
+        set -euo pipefail
+        
+        DOWNLOAD_PATH="downloads/${PROVIDER}"
+        mkdir -p "$DOWNLOAD_PATH"
+        
+        echo "path=${DOWNLOAD_PATH}" >> "$GITHUB_OUTPUT"
+        
+        download_and_extract() {
+          local db="$1"
+          local max_attempts=3
+          local attempt=1
+          
+          # Build URL from suffix pattern
+          local suffix="${URL_SUFFIX//\{db\}/$db}"
+          suffix="${suffix//\{month\}/$MONTH}"
+          local url="${BASE_URL}${suffix}"
+          
+          while [[ $attempt -le $max_attempts ]]; do
+            echo "📥 Downloading $db (attempt $attempt/$max_attempts)..."
+            
+            local curl_opts=(-sSfL --retry 2 --retry-delay 5)
+            [[ -n "$AUTH" ]] && curl_opts+=(-u "$AUTH")
+            
+            local output_file="${DOWNLOAD_PATH}/${db}.archive"
+            
+            if curl "${curl_opts[@]}" "$url" -o "$output_file"; then
+              # Verify file is valid and not empty
+              if [[ -s "$output_file" ]] && gzip -t "$output_file" 2>/dev/null; then
+                # Extract based on archive type
+                if [[ "$ARCHIVE_TYPE" == "tar.gz" ]]; then
+                  tar -xzf "$output_file" -C "$DOWNLOAD_PATH" --strip-components=1
+                else
+                  # For .gz files, rename and gunzip
+                  mv "$output_file" "${DOWNLOAD_PATH}/${db}.mmdb.gz"
+                  gunzip "${DOWNLOAD_PATH}/${db}.mmdb.gz"
+                fi
+                rm -f "$output_file"
+                echo "✅ Successfully downloaded $db"
+                return 0
+              fi
+            fi
+            
+            echo "⚠️  Attempt $attempt failed for $db"
+            rm -f "$output_file" "${DOWNLOAD_PATH}/${db}.mmdb.gz"
+            ((attempt++))
+            sleep $((attempt * 5))
+          done
+          
+          echo "❌ ERROR: Failed to download $db after $max_attempts attempts"
+          return 1
+        }
+        
+        echo "🚀 Starting download of ${PROVIDER} databases..."
+        echo ""
+        
+        for db in $DATABASES; do
+          download_and_extract "$db"
+        done
+        
+        echo ""
+        echo "✅ All ${PROVIDER} databases downloaded successfully"
+        ls -la "$DOWNLOAD_PATH"/*.mmdb
