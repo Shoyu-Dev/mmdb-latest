@@ -25,6 +25,12 @@ jobs:
           MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
         run: |
           set -euo pipefail
+          # Skip MaxMind downloads if credentials are not available in PR context
+          if [[ -z "${MAXMIND_ACCOUNT_ID:-}" || -z "${MAXMIND_LICENSE_KEY:-}" ]]; then
+            echo "⚠️ Skipping MaxMind downloads - MAXMIND credentials not available in PR"
+            exit 0
+          fi
+
           mkdir -p downloads/maxmind
           BASE_URL="https://download.maxmind.com/geoip/databases"
 
