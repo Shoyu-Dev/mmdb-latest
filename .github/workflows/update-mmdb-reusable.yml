@@ -1,0 +1,263 @@
+name: Update MMDB Database (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      provider:
+        description: 'Database provider name (e.g., maxmind, dbip)'
+        required: true
+        type: string
+      databases:
+        description: 'Space-separated list of database names'
+        required: true
+        type: string
+      base-url:
+        description: 'Base URL for downloads'
+        required: true
+        type: string
+      url-suffix:
+        description: 'URL suffix pattern ({db} and {month} are replaced)'
+        required: true
+        type: string
+      archive-type:
+        description: 'Archive type: tar.gz or gz'
+        required: false
+        type: string
+        default: 'tar.gz'
+      use-month-in-url:
+        description: 'Whether to include month (YYYY-MM) in URL'
+        required: false
+        type: boolean
+        default: false
+      license-text:
+        description: 'License text to include in release'
+        required: true
+        type: string
+      release-notes-prefix:
+        description: 'Prefix for release notes'
+        required: true
+        type: string
+      retention-days:
+        description: 'Number of days to retain dated releases'
+        required: false
+        type: number
+        default: 30
+      run-integration-tests:
+        description: 'Whether to run integration tests before release'
+        required: false
+        type: boolean
+        default: true
+      ipwhere-repo:
+        description: 'IPWhere repository for integration tests'
+        required: false
+        type: string
+        default: 'Shoyu-Dev/ipwhere'
+    secrets:
+      download-username:
+        description: 'Username for authenticated downloads'
+        required: false
+      download-password:
+        description: 'Password/key for authenticated downloads'
+        required: false
+
+jobs:
+  download-and-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.checksum.outputs.changed }}
+      checksums: ${{ steps.checksum.outputs.checksums }}
+      date: ${{ steps.date.outputs.date }}
+      month: ${{ steps.date.outputs.month }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get current date
+        id: date
+        run: |
+          echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+          echo "month=$(date +'%Y-%m')" >> "$GITHUB_OUTPUT"
+
+      - name: Download databases
+        id: download
+        uses: ./.github/actions/download-databases
+        with:
+          provider: ${{ inputs.provider }}
+          databases: ${{ inputs.databases }}
+          base-url: ${{ inputs.base-url }}
+          url-suffix: ${{ inputs.url-suffix }}
+          auth: ${{ secrets.download-username && secrets.download-password && format('{0}:{1}', secrets.download-username, secrets.download-password) || '' }}
+          month: ${{ inputs.use-month-in-url && steps.date.outputs.month || '' }}
+          archive-type: ${{ inputs.archive-type }}
+
+      - name: Calculate checksums and compare
+        id: checksum
+        uses: ./.github/actions/checksum-compare
+        with:
+          provider: ${{ inputs.provider }}
+          download-path: ${{ steps.download.outputs.download-path }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create LICENSE file
+        if: steps.checksum.outputs.changed == 'true'
+        run: |
+          cat > "${{ steps.download.outputs.download-path }}/LICENSE.txt" << 'EOF'
+          ${{ inputs.license-text }}
+          EOF
+
+      - name: Upload databases as artifact
+        if: steps.checksum.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.provider }}-databases
+          path: |
+            ${{ steps.download.outputs.download-path }}/*.mmdb
+            ${{ steps.download.outputs.download-path }}/LICENSE.txt
+            ${{ steps.download.outputs.download-path }}/SHA256SUMS.txt
+          retention-days: 1
+
+  integration-test:
+    needs: download-and-check
+    if: needs.download-and-check.outputs.changed == 'true' && inputs.run-integration-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download database artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.provider }}-databases
+          path: data
+
+      - name: List downloaded files
+        run: ls -la data/
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Clone ipwhere for integration tests
+        run: |
+          git clone --depth 1 https://github.com/${{ inputs.ipwhere-repo }}.git ipwhere
+
+      - name: Determine database paths
+        id: dbpaths
+        run: |
+          # Find city and ASN database files (supports both dbip and maxmind naming)
+          CITY_DB=$(find data -name '*city*.mmdb' -o -name '*City*.mmdb' | head -1)
+          ASN_DB=$(find data -name '*asn*.mmdb' -o -name '*ASN*.mmdb' | head -1)
+          
+          if [[ -z "$CITY_DB" || -z "$ASN_DB" ]]; then
+            echo "❌ Could not find required database files"
+            ls -la data/
+            exit 1
+          fi
+          
+          echo "city_db=$(realpath $CITY_DB)" >> "$GITHUB_OUTPUT"
+          echo "asn_db=$(realpath $ASN_DB)" >> "$GITHUB_OUTPUT"
+          echo "✅ Found City DB: $CITY_DB"
+          echo "✅ Found ASN DB: $ASN_DB"
+
+      - name: Run integration tests
+        env:
+          CITY_DB_PATH: ${{ steps.dbpaths.outputs.city_db }}
+          ASN_DB_PATH: ${{ steps.dbpaths.outputs.asn_db }}
+        run: |
+          cd ipwhere
+          echo "Running integration tests against ${{ inputs.provider }} databases..."
+          go test -tags=integration -v ./internal/geo/...
+
+  release:
+    needs: [download-and-check, integration-test]
+    # Run if changed AND (tests passed OR tests were skipped because run-integration-tests is false)
+    if: |
+      always() &&
+      needs.download-and-check.outputs.changed == 'true' &&
+      (needs.integration-test.result == 'success' || needs.integration-test.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download database artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.provider }}-databases
+          path: downloads/${{ inputs.provider }}
+
+      - name: Create dated release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PROVIDER="${{ inputs.provider }}"
+          DATE="${{ needs.download-and-check.outputs.date }}"
+          TAG="${PROVIDER}-${DATE}"
+          
+          gh release create "$TAG" \
+            --title "${PROVIDER^} Database - ${DATE}" \
+            --notes "${{ inputs.release-notes-prefix }}
+          
+          **Date:** ${DATE}
+          
+          ✅ **Integration tests passed**
+          
+          **Note:** This release will be automatically removed after ${{ inputs.retention-days }} days.
+          
+          ## SHA256 Checksums
+          \`\`\`
+          ${{ needs.download-and-check.outputs.checksums }}
+          \`\`\`" \
+            downloads/${{ inputs.provider }}/*.mmdb \
+            downloads/${{ inputs.provider }}/LICENSE.txt \
+            downloads/${{ inputs.provider }}/SHA256SUMS.txt
+
+      - name: Update latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PROVIDER="${{ inputs.provider }}"
+          DATE="${{ needs.download-and-check.outputs.date }}"
+          LATEST_TAG="${PROVIDER}-latest"
+          
+          # Delete existing latest release and tag if they exist
+          gh release delete "$LATEST_TAG" --yes --cleanup-tag 2>/dev/null || true
+          
+          # Create new latest release with same assets
+          gh release create "$LATEST_TAG" \
+            --title "${PROVIDER^} Database - Latest" \
+            --notes "**Latest ${PROVIDER^} databases** (updated ${DATE})
+          
+          This release always points to the most recent ${PROVIDER^} databases.
+          For a specific version, see [${PROVIDER}-${DATE}](../../releases/tag/${PROVIDER}-${DATE}).
+          
+          ${{ inputs.release-notes-prefix }}
+          
+          ✅ **Integration tests passed**
+          
+          ## SHA256 Checksums
+          \`\`\`
+          ${{ needs.download-and-check.outputs.checksums }}
+          \`\`\`" \
+            downloads/${{ inputs.provider }}/*.mmdb \
+            downloads/${{ inputs.provider }}/LICENSE.txt \
+            downloads/${{ inputs.provider }}/SHA256SUMS.txt
+
+  cleanup:
+    needs: [download-and-check, release]
+    if: always() && needs.download-and-check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cleanup old releases
+        uses: ./.github/actions/cleanup-releases
+        with:
+          prefix: ${{ inputs.provider }}
+          retention-days: ${{ inputs.retention-days }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
