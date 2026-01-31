@@ -59,8 +59,18 @@ jobs:
           download_and_extract "GeoLite2-City"
           download_and_extract "GeoLite2-ASN"
 
+      - name: Check MaxMind files
+        id: check_maxmind
+        run: |
+          if compgen -G "downloads/maxmind/*.mmdb" > /dev/null; then
+            echo "maxmind_ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "maxmind_ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Calculate checksums
         id: checksum
+        if: steps.check_maxmind.outputs.maxmind_ok == 'true'
         run: |
           set -euo pipefail
           mkdir -p .checksums/maxmind
@@ -71,6 +81,7 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
+        if: steps.check_maxmind.outputs.maxmind_ok == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: maxmind-databases
