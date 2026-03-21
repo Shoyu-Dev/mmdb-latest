@@ -31,6 +31,9 @@ jobs:
         
         **License:** [GeoLite2 EULA](https://www.maxmind.com/en/geolite2/eula)
       environment-name: maxmind
+      # GeoLite2 (free tier) lacks country data for anycast IPs (Cloudflare,
+      # Quad9, OpenDNS) causing ipwhere integration tests to fail on ISO codes.
+      run-integration-tests: false
     secrets:
       download-username: ${{ secrets.MAXMIND_ACCOUNT_ID }}
       download-password: ${{ secrets.MAXMIND_LICENSE_KEY }}
