@@ -31,6 +31,9 @@ outputs:
   download-path:
     description: 'Path to downloaded files'
     value: ${{ steps.download.outputs.path }}
+  resolved-month:
+    description: 'The actual month used for downloads (may differ from input if current month was not yet available)'
+    value: ${{ steps.download.outputs.resolved_month }}
 
 runs:
   using: 'composite'
@@ -53,6 +56,39 @@ runs:
         mkdir -p "$DOWNLOAD_PATH"
         
         echo "path=${DOWNLOAD_PATH}" >> "$GITHUB_OUTPUT"
+        
+        # When month-based URLs are used, discover the latest available month
+        # via HEAD requests instead of assuming the current month is published.
+        if [[ -n "$MONTH" ]]; then
+          FIRST_DB=$(echo "$DATABASES" | awk '{print $1}')
+          
+          probe_month() {
+            local month="$1"
+            local suffix="${URL_SUFFIX//\{db\}/$FIRST_DB}"
+            suffix="${suffix//\{month\}/$month}"
+            local url="${BASE_URL}${suffix}"
+            local http_code
+            http_code=$(curl -sSL -o /dev/null -w '%{http_code}' --head "$url" 2>/dev/null)
+            [[ "$http_code" == "200" ]]
+          }
+          
+          CURRENT_MONTH="$MONTH"
+          PREV_MONTH=$(date -d "${CURRENT_MONTH}-01 -1 month" '+%Y-%m' 2>/dev/null \
+            || date -v-1m -jf '%Y-%m-%d' "${CURRENT_MONTH}-01" '+%Y-%m' 2>/dev/null)
+          
+          echo "🔍 Probing for latest available month..."
+          if probe_month "$CURRENT_MONTH"; then
+            echo "✅ Current month ($CURRENT_MONTH) is available"
+          elif probe_month "$PREV_MONTH"; then
+            echo "⚠️  Current month ($CURRENT_MONTH) not yet available, using previous month ($PREV_MONTH)"
+            MONTH="$PREV_MONTH"
+          else
+            echo "❌ ERROR: Neither current ($CURRENT_MONTH) nor previous ($PREV_MONTH) month available"
+            exit 1
+          fi
+        fi
+        
+        echo "resolved_month=${MONTH}" >> "$GITHUB_OUTPUT"
         
         download_and_extract() {
           local db="$1"
